@@ -1,0 +1,4 @@
+requests>=2.31
+PyYAML>=6.0
+scikit-learn>=1.3   # taste model (LinearSVC over TF-IDF)
+numpy>=1.24

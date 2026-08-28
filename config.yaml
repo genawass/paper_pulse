@@ -1,0 +1,61 @@
+# PaperPulse config. Weights are expected to be tuned over the first month —
+# every number here is a starting guess, not a result.
+
+ingest:
+  # cs.CV is the spine. cs.LG and cs.AI enter only as cross-lists, which the
+  # category filter below enforces (a paper must be primarily CV-ish).
+  categories: [cs.CV, eess.IV, cs.GR]
+  days: 14
+
+# Applied + showable. Method-heavy topics (federated learning, unlearning,
+# dataset distillation, adversarial attacks, forensics) are deliberately absent.
+# Unused by the metadata ranker; here so the topic map has somewhere to live.
+topics_file: topics.json
+
+# TF-IDF + LinearSVC settings, from karpathy/arxiv-sanity-lite.
+taste:
+  C: 0.01
+  min_df: 5
+  max_df: 0.1          # drop terms in >10% of abstracts: academic boilerplate
+  max_features: 20000
+
+rank:
+  # Artifact footprint. These are the day-1 signals: they exist the moment the
+  # paper posts, unlike citations, and they are costly to fake — a lab that
+  # builds a project page and ships a demo intends the work to travel.
+  footprint:
+    project_page: 2.0
+    code: 2.0
+    venue_top: 2.0        # CVPR/ICCV/ECCV/NeurIPS/ICML/ICLR/SIGGRAPH
+    venue_strong: 1.0     # AAAI/WACV/BMVC/3DV/CoRL/ICRA/...
+    oral: 1.0             # oral / spotlight / highlight / best paper
+    hf_media: 1.0         # teaser figures uploaded to HF; "showable" proxy
+    hf_daily: 0.5         # submitted to HF daily papers
+    hf_model: 1.0         # weights released
+    hf_dataset: 0.75
+    hf_space: 1.5         # hosted live demo; rare and expensive
+    demo_video: 1.5       # <video> on the project page — best free "showable" proxy
+
+  # Community. Near zero for everything inside a 7-day window, by design —
+  # this term is here to break ties, not to drive the ranking.
+  community:
+    upvotes: 1.0          # applied to log1p(upvotes)
+    stars: 0.8            # applied to log1p(stars)
+
+  # Divide community by log-age so a 1-day-old paper with 4 upvotes is not
+  # buried under a 14-day-old paper with 20. On by default: without it the
+  # ranking is dominated by how long a paper has been up, which for a *weekly*
+  # post is exactly the wrong axis. Measured: MODUS ranks 20/1136 off, 3/1136 on.
+  age_normalize: true
+
+  # Learned taste (see taste.py). Contribution is weight x percentile, so this
+  # number is the most a paper can gain from "you have liked things like this".
+  # Inactive until there are 5+ thumbs-up.
+  taste: 3.0
+
+  # Axes that need an LLM. Not scored yet; listed so the weights are visible
+  # when triage lands.
+  llm_axes:
+    demonstrability: 0.20  # can you show it in one image or a 10s clip
+    applied: 0.15          # could a practitioner run this on their data
+    novelty: 0.15
