@@ -94,12 +94,13 @@ expensive stage downstream is gated on it.
 
 ```bash
 crontab -e
-17 7 * * *  /Users/genadiyvasserman/dev/paper_pulse/run.sh >> /Users/genadiyvasserman/dev/paper_pulse/paperpulse.log 2>&1
+17 7 * * *  /home/genadiy/dev/paper_pulse/run.sh >> /home/genadiy/dev/paper_pulse/paperpulse.log 2>&1
 ```
 
-`ingest` exits 1 when arXiv had nothing genuinely new, so a quiet day costs one
-API call rather than 30+ minutes of throttled HuggingFace requests. `weekly` has
-the same gate built in (`--force` overrides).
+`ingest` exits 2 when arXiv had nothing genuinely new, so a quiet day costs one
+API call rather than 30+ minutes of throttled HuggingFace requests. Exit 1 means
+arXiv was unreachable — kept distinct so an outage never reads as a quiet day.
+`weekly` has the same gate built in (`--force` overrides).
 
 Paging also terminates early: `--break-after N` stops after N consecutive
 all-known pages, and immediately if the very first page is all-known. Default 2.

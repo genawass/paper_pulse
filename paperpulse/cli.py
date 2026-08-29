@@ -41,15 +41,19 @@ def cmd_ingest(args):
 
     known = {r[0] for r in conn.execute("SELECT arxiv_id FROM papers")}
     n = n_new = 0
-    for paper in arxiv.fetch_recent(cats, days=days, max_papers=args.limit,
-                                    known=known,
-                                    break_after=getattr(args, "break_after", 2)):
-        if paper["arxiv_id"] not in known:
-            n_new += 1
-        store.upsert_paper(conn, links.enrich(paper))
-        n += 1
-        if n % 500 == 0:
-            conn.commit()
+    failed = None
+    try:
+        for paper in arxiv.fetch_recent(cats, days=days, max_papers=args.limit,
+                                        known=known,
+                                        break_after=getattr(args, "break_after", 2)):
+            if paper["arxiv_id"] not in known:
+                n_new += 1
+            store.upsert_paper(conn, links.enrich(paper))
+            n += 1
+            if n % 500 == 0:
+                conn.commit()
+    except arxiv.ArxivUnavailable as e:
+        failed = e
     conn.commit()
 
     total = store.count(conn)
@@ -66,8 +70,12 @@ def cmd_ingest(args):
     print("  venue:        %d (%.1f%%)" % (with_venue, 100.0 * with_venue / max(total, 1)))
 
     # Exit status is the signal downstream stages gate on — the arxiv-sanity-lite
-    # pattern. Nonzero means "nothing new", not "something broke".
-    return 0 if n_new else 1
+    # pattern. 0 = new papers, 2 = nothing new, 1 = arXiv unreachable. The last
+    # two must stay distinct or an outage reads as a quiet day forever.
+    if failed is not None:
+        print("\narxiv unreachable: %s" % failed, file=sys.stderr)
+        return 1
+    return 0 if n_new else 2
 
 
 def cmd_reparse(args):
@@ -113,9 +121,19 @@ def cmd_enrich(args):
     if args.ids:
         ids = list(dict.fromkeys(args.ids + ids))  # force-include, keep order
 
+    if not ids:
+        print("nothing to enrich")
+        return
+
     print("enriching %d papers from HF ..." % len(ids))
+    errors = 0
     for i, aid in enumerate(ids, 1):
         meta = hf.fetch_paper(aid)
+        if meta is None:
+            # Transient error: write nothing rather than overwrite a previous
+            # successful fetch with "not on HF".
+            errors += 1
+            continue
         store.upsert_hf(conn, meta)
         if meta.get("on_hf"):
             store.record_signal(conn, aid, hf_upvotes=meta.get("upvotes"),
@@ -129,7 +147,8 @@ def cmd_enrich(args):
     on_hf = conn.execute(
         "SELECT COUNT(*) FROM hf_meta WHERE on_hf=1 AND arxiv_id IN (%s)" % marks, ids
     ).fetchone()[0]
-    print("done. %d of %d have an HF paper page" % (on_hf, len(ids)))
+    print("done. %d of %d have an HF paper page%s"
+          % (on_hf, len(ids), ", %d skipped on errors" % errors if errors else ""))
 
 
 def cmd_pages(args):
@@ -143,12 +162,9 @@ def cmd_pages(args):
         rows = [r for r in rows if r["arxiv_id"] not in seen]
     print("fetching %d project pages ..." % len(rows))
 
-    session = None
-    for i, r in enumerate(rows, 1):
-        store.upsert_page(conn, r["arxiv_id"], page.fetch(r["project_url"], session))
-        if i % 20 == 0:
-            conn.commit()
-            print("  %d/%d" % (i, len(rows)), flush=True)
+    results = page.fetch_many([r["project_url"] for r in rows])
+    for r in rows:
+        store.upsert_page(conn, r["arxiv_id"], results[r["project_url"]])
     conn.commit()
 
     ok = conn.execute("SELECT COUNT(*) FROM page_meta WHERE ok=1").fetchone()[0]
@@ -166,13 +182,25 @@ def cmd_weekly(args):
     should cost one API call, not that.
     """
     print("[1/5] ingest")
-    if cmd_ingest(args) and not args.force:
+    rc = cmd_ingest(args)
+    if rc == 1:
+        return 1  # arXiv unreachable — not a quiet day, and --force can't help
+    if rc and not args.force:
         print("\nno new papers — skipping enrich/pages/stars/report."
               " Use --force to run anyway.")
         return 0
+
+    # Each stage has its own depth: enrich wide (HF requests are cheap and the
+    # prescore is crude), stars narrow (60/hr unauthenticated), pages/report
+    # at the display size.
+    top = args.top
+    args.top = args.enrich_top
     print("\n[2/5] enrich"); cmd_enrich(args)
+    args.top = top
     print("\n[3/5] project pages"); cmd_pages(args)
+    args.top = args.stars_top
     print("\n[4/5] github stars"); cmd_stars(args)
+    args.top = top
     print("\n[5/5] report"); cmd_report(args)
     return 0
 
@@ -182,8 +210,9 @@ def cmd_stars(args):
     conn = store.connect(args.db)
 
     rows = _ranked(conn, cfg, limit=args.top)
+    # "0 stars" is an answer; only fetch repos never resolved at all.
     need = [(r["arxiv_id"], r["code_url"]) for r in rows
-            if r["code_url"] and not r["stars"]]
+            if r["code_url"] and not r["stars_fetched"]]
     print("resolving stars for %d repos ..." % len(need))
 
     found = github.stars_bulk([u for _, u in need], limit=args.top)
@@ -358,6 +387,10 @@ def main(argv=None):
     p.add_argument("--categories", nargs="+")
     p.add_argument("--limit", type=int)
     p.add_argument("--top", type=int, default=60)
+    p.add_argument("--enrich-top", type=int, default=400,
+                   help="how many papers get an HF request (wider than --top)")
+    p.add_argument("--stars-top", type=int, default=50,
+                   help="GitHub star lookups (60/hr unauthenticated)")
     p.add_argument("--format", choices=["html", "md"], default="html")
     p.add_argument("--include-daily", type=int, default=7, metavar="DAYS")
     p.add_argument("--ids", nargs="+")

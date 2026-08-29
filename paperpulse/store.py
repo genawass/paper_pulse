@@ -158,8 +158,12 @@ def upsert_hf(conn, m):
             hf_github_repo=excluded.hf_github_repo,
             hf_github_stars=excluded.hf_github_stars,
             submitted_on_daily_at=excluded.submitted_on_daily_at,
-            n_models=excluded.n_models, n_datasets=excluded.n_datasets,
-            n_spaces=excluded.n_spaces, raw_json=excluded.raw_json
+            -- NULL here means "the repos call failed", never "zero repos"
+            -- (that is 0), so keep the previously observed counts.
+            n_models=COALESCE(excluded.n_models, hf_meta.n_models),
+            n_datasets=COALESCE(excluded.n_datasets, hf_meta.n_datasets),
+            n_spaces=COALESCE(excluded.n_spaces, hf_meta.n_spaces),
+            raw_json=excluded.raw_json
         """,
         (
             m["arxiv_id"], utcnow(), 1 if m.get("on_hf") else 0,

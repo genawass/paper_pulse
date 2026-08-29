@@ -163,7 +163,10 @@ function current(){
   return rows;
 }
 
-function esc(s){ const d=document.createElement('div'); d.textContent=s??''; return d.innerHTML; }
+// Escapes quotes too: these strings land inside attributes (src, href), and
+// og:image / titles come from arbitrary external pages.
+function esc(s){ return String(s??'').replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 function card(r, i, max){
   const thumb = r.thumb

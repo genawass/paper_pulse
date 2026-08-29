@@ -4,7 +4,7 @@
 # expensive downstream is skipped on that signal.
 #
 #   crontab -e
-#   17 7 * * *  /Users/genadiyvasserman/dev/paper_pulse/run.sh >> /Users/genadiyvasserman/dev/paper_pulse/paperpulse.log 2>&1
+#   17 7 * * *  /home/genadiy/dev/paper_pulse/run.sh >> /home/genadiy/dev/paper_pulse/paperpulse.log 2>&1
 #
 # Runs at 07:17 daily. Off-the-hour on purpose — every cron on earth fires at
 # :00, and arXiv notices.
@@ -18,12 +18,17 @@ TOP=${TOP:-60}
 
 echo "=== $(date -u '+%Y-%m-%d %H:%M:%SZ') paperpulse ==="
 
+# Exit codes: 0 = new papers, 2 = nothing new, anything else = failure.
+# The failure branch matters: an arXiv outage must not read as a quiet day.
 $PY -m paperpulse.cli ingest --days "$DAYS"
 status=$?
 
-if [ $status -ne 0 ]; then
+if [ $status -eq 2 ]; then
     echo "no new papers — skipping enrich/pages/stars/report"
     exit 0
+elif [ $status -ne 0 ]; then
+    echo "ingest FAILED (exit $status) — see above"
+    exit "$status"
 fi
 
 echo "new papers detected — running the rest of the pipeline"

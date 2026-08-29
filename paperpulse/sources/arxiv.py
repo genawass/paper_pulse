@@ -25,6 +25,11 @@ NS = {
 UA = {"User-Agent": "paperpulse/0.1 (research digest; contact genawas@gmail.com)"}
 
 
+class ArxivUnavailable(Exception):
+    """arXiv could not be reached after retries. Distinct from a quiet day:
+    the caller must not report "nothing new" when the truth is "no answer"."""
+
+
 def _text(entry, path):
     el = entry.find(path, NS)
     if el is None or el.text is None:
@@ -80,19 +85,29 @@ def _fetch_page(query, start, session, retries=4):
         "sortBy": "submittedDate",
         "sortOrder": "descending",
     }
+    err = None
     for attempt in range(retries):
         try:
             r = session.get(API, params=params, headers=UA, timeout=60)
             r.raise_for_status()
-            entries = ET.fromstring(r.content).findall("a:entry", NS)
+            root = ET.fromstring(r.content)
+            entries = root.findall("a:entry", NS)
             if entries:
                 return entries
-            # Empty page mid-range is usually transient throttling, not the end.
+            # An empty page mid-range is usually transient throttling — but
+            # past totalResults it is the genuine end, not worth retrying.
+            total = root.find("os:totalResults", NS)
+            if total is not None and (total.text or "").isdigit() \
+                    and start >= int(total.text):
+                return []
             if start == 0:
                 return []
-        except (requests.RequestException, ET.ParseError):
-            pass
+            err = None  # arXiv answered; the page was just empty
+        except (requests.RequestException, ET.ParseError) as e:
+            err = e
         time.sleep(DELAY * (attempt + 2))
+    if err is not None:
+        raise ArxivUnavailable(str(err))
     return []
 
 

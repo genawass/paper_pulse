@@ -145,6 +145,9 @@ def rank(conn, cfg, limit=None, require_category=None, taste_scores=None):
             "code_url": row["code_url"] or row["hf_github_repo"],
             "upvotes": row["upvotes"] or 0,
             "stars": row["hf_github_stars"] or 0,
+            # 0 stars and "never looked" both display as 0; the stars stage
+            # needs the difference to avoid re-fetching genuine zeros.
+            "stars_fetched": row["hf_github_stars"] is not None,
         })
     out.sort(key=lambda r: (-r["score"], r["arxiv_id"]))
     return out[:limit] if limit else out
