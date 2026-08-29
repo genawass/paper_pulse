@@ -12,7 +12,7 @@ import argparse
 import json
 import sys
 
-from . import links, rank as ranker, report, store, taste
+from . import cluster, links, rank as ranker, report, store, taste
 from .sources import arxiv, github, hf, page
 
 
@@ -20,6 +20,14 @@ def _ranked(conn, cfg, limit=None):
     """Rank with the learned taste model applied, if it has enough labels."""
     scores, _ = taste.fit(conn, cfg)
     return ranker.rank(conn, cfg, limit=limit, taste_scores=scores)
+
+
+def _themed(rows, cfg):
+    """Attach theme_id/theme to each row in place. Returns rows."""
+    themes = cluster.fit(rows, cfg)
+    for r in rows:
+        r.update(themes.get(r["arxiv_id"], {"theme_id": -1, "theme": cluster.OTHER}))
+    return rows
 
 
 def _window_dates(conn, days):
@@ -228,6 +236,11 @@ def cmd_rank(args):
     cfg = ranker.load_config(args.config)
     conn = store.connect(args.db)
     rows = _ranked(conn, cfg, limit=args.top)
+    _themed(rows, cfg)
+
+    if args.theme:
+        needle = args.theme.lower()
+        rows = [r for r in rows if needle in r["theme"].lower()]
 
     if args.json:
         print(json.dumps(rows, indent=2))
@@ -235,13 +248,44 @@ def cmd_rank(args):
 
     for i, r in enumerate(rows, 1):
         bits = ", ".join("%s=%s" % (k, v) for k, v in sorted(r["parts"].items()))
-        print("%3d. %-6s %6.2f  %s" % (i, r["arxiv_id"], r["score"], r["title"][:82]))
+        print("%3d. %-6s %6.2f  [%s]  %s" % (
+            i, r["arxiv_id"], r["score"], r["theme"], r["title"][:70]))
         print("      %s" % (bits or "no signals"))
         if r["venue"] or r["project_url"]:
             print("      %s%s" % (
                 (r["venue"] + "  ") if r["venue"] else "",
                 r["project_url"] or "",
             ))
+
+
+def cmd_themes(args):
+    """List the themes found in the ranked pool and their members."""
+    cfg = ranker.load_config(args.config)
+    conn = store.connect(args.db)
+    rows = _ranked(conn, cfg, limit=args.top)
+    _themed(rows, cfg)
+
+    groups = {}
+    for r in rows:
+        groups.setdefault(r["theme"], []).append(r)
+    # Real themes first, largest first; "Other" always last.
+    ordered = sorted(
+        (k for k in groups if k != cluster.OTHER),
+        key=lambda k: -len(groups[k]),
+    )
+    if cluster.OTHER in groups:
+        ordered.append(cluster.OTHER)
+
+    if not ordered or (len(ordered) == 1 and ordered[0] == cluster.OTHER):
+        print("no clusters — %d ranked papers, need %d+ to cluster"
+              % (len(rows), cluster.MIN_PAPERS))
+        return
+
+    for theme in ordered:
+        members = groups[theme]
+        print("\n%s  (%d papers)" % (theme, len(members)))
+        for r in members:
+            print("  %-6s %6.2f  %s" % (r["arxiv_id"], r["score"], r["title"][:78]))
 
 
 def cmd_report(args):
@@ -268,6 +312,7 @@ def cmd_report(args):
         if rated:
             print("  (hiding %d already-rated; --include-rated to keep)" % len(rated))
     rows = rows[:args.top]
+    _themed(rows, cfg)
     span = conn.execute(
         "SELECT MIN(substr(submitted_at,1,10)), MAX(substr(submitted_at,1,10))"
         " FROM papers"
@@ -332,6 +377,7 @@ def cmd_show(args):
     cfg = ranker.load_config(args.config)
     conn = store.connect(args.db)
     rows = _ranked(conn, cfg)
+    _themed(rows, cfg)
     index = {r["arxiv_id"]: i for i, r in enumerate(rows, 1)}
 
     for aid in args.ids:
@@ -342,6 +388,7 @@ def cmd_show(args):
         r = rows[i - 1]
         print("%s  rank %d of %d   score %.2f" % (aid, i, len(rows), r["score"]))
         print("  %s" % r["title"])
+        print("  theme:   %s" % r["theme"])
         print("  venue:   %s" % (r["venue"] or "-"))
         print("  project: %s" % (r["project_url"] or "-"))
         print("  code:    %s" % (r["code_url"] or "-"))
@@ -405,8 +452,13 @@ def main(argv=None):
 
     p = sub.add_parser("rank", help="print the ranking")
     p.add_argument("--top", type=int, default=40)
+    p.add_argument("--theme", help="keep only papers whose theme label contains this")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_rank)
+
+    p = sub.add_parser("themes", help="list themes in the ranked pool (TF-IDF clustering)")
+    p.add_argument("--top", type=int, default=60)
+    p.set_defaults(func=cmd_themes)
 
     p = sub.add_parser("report", help="write the ranking to reports/")
     p.add_argument("--top", type=int, default=40)

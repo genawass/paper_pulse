@@ -19,6 +19,19 @@ taste:
   max_df: 0.1          # drop terms in >10% of abstracts: academic boilerplate
   max_features: 20000
 
+# Theme clustering for browsing (cluster.py) — TF-IDF + KMeans over the
+# ranked pool, not doc.md §5's embedding + UMAP/HDBSCAN (that's for essay
+# generation; this is for search/filter). k is picked by silhouette score
+# in [k_min, k_max]. A cluster smaller than min_cluster_size folds into
+# "Other" rather than getting its own noisy label.
+cluster:
+  k_min: 3
+  k_max: 6
+  min_cluster_size: 2
+  min_df: 2
+  max_df: 0.4
+  max_features: 5000
+
 rank:
   # Artifact footprint. These are the day-1 signals: they exist the moment the
   # paper posts, unlike citations, and they are costly to fake — a lab that

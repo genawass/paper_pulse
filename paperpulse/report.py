@@ -21,14 +21,17 @@ def _meta_line(span, n_papers, n_enriched):
 
 
 def render_markdown(rows, span, n_papers, n_enriched, cfg, words=None):
+    has_themes = any(r.get("theme") for r in rows)
     lines = [
         "# PaperPulse — top %d" % len(rows), "",
         _meta_line(span, n_papers, n_enriched), "",
         "Weights: `%s`  age_normalize=%s"
         % (cfg["rank"]["footprint"], cfg["rank"].get("age_normalize")), "",
-        "| # | Score | Paper | Venue | Links | Signals |",
-        "|---|---|---|---|---|---|",
     ]
+    header = ["#", "Score", "Paper"] + (["Theme"] if has_themes else []) + \
+             ["Venue", "Links", "Signals"]
+    lines.append("| %s |" % " | ".join(header))
+    lines.append("|%s|" % ("---|" * len(header)))
     for i, r in enumerate(rows, 1):
         links = []
         if r["project_url"]:
@@ -37,9 +40,11 @@ def render_markdown(rows, span, n_papers, n_enriched, cfg, words=None):
             links.append("[code](%s)" % r["code_url"])
         links.append("[arXiv](https://arxiv.org/abs/%s)" % r["arxiv_id"])
         signals = ", ".join(k for k in sorted(r["parts"]) if k != "community")
-        lines.append("| %d | %.2f | **%s** | %s | %s | %s |" % (
-            i, r["score"], r["title"].replace("|", "\\|")[:88],
-            r["venue"] or "—", " · ".join(links), signals))
+        cells = [str(i), "%.2f" % r["score"], "**%s**" % r["title"].replace("|", "\\|")[:88]]
+        if has_themes:
+            cells.append(r.get("theme") or "—")
+        cells += [r["venue"] or "—", " · ".join(links), signals]
+        lines.append("| %s |" % " | ".join(cells))
     return "\n".join(lines) + "\n"
 
 
@@ -101,6 +106,7 @@ font-size:.75rem;color:var(--muted);margin-bottom:.4rem}
 .badge.strong{color:var(--strong);background:var(--strongbg)}
 .badge.other{color:var(--other);background:var(--otherbg)}
 .badge.video{color:var(--vid);background:var(--vidbg)}
+.badge.theme{color:var(--chipfg);background:var(--chip)}
 .blurb{font-size:.85rem;color:var(--muted);margin:0 0 .45rem;
 display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .blurb.open{-webkit-line-clamp:unset;display:block}
@@ -137,7 +143,24 @@ color:var(--muted);font-size:.79rem}
 JS = """
 const DATA = __DATA__;
 const $ = s => document.querySelector(s);
-const state = {q:'', sort:'score', filters:new Set()};
+const state = {q:'', sort:'score', theme:'', filters:new Set()};
+
+function populateThemes(){
+  const sel = $('#theme');
+  if (!sel) return;
+  const counts = new Map();
+  for (const r of DATA) if (r.theme) counts.set(r.theme, (counts.get(r.theme)||0)+1);
+  if (!counts.size) { sel.hidden = true; return; }
+  const other = counts.get('Other') || 0;
+  const names = [...counts.keys()].filter(t => t !== 'Other')
+    .sort((a,b) => counts.get(b)-counts.get(a));
+  if (other) names.push('Other');
+  for (const t of names) {
+    const o = document.createElement('option');
+    o.value = t; o.textContent = `${t} (${counts.get(t)})`;
+    sel.appendChild(o);
+  }
+}
 
 const TESTS = {
   video:  r => r.has_video,
@@ -151,6 +174,7 @@ const TESTS = {
 
 function current(){
   let rows = DATA.filter(r => {
+    if (state.theme && r.theme !== state.theme) return false;
     for (const f of state.filters) if (!TESTS[f](r)) return false;
     if (!state.q) return true;
     return (r.title + ' ' + (r.abstract||'') + ' ' + (r.venue||'')).toLowerCase()
@@ -176,6 +200,8 @@ function card(r, i, max){
     : `<div class="thumb empty">NO IMAGE</div>`;
 
   const badges = [];
+  if (r.theme && r.theme !== 'Other')
+    badges.push(`<span class="badge theme">${esc(r.theme)}</span>`);
   if (r.venue) badges.push(`<span class="badge ${r.venue_tier||'other'}">${esc(r.venue)}</span>`);
   if (r.has_video) badges.push(`<span class="badge video">video</span>`);
 
@@ -220,12 +246,14 @@ function render(){
 
 $('#q').addEventListener('input', e => { state.q = e.target.value.toLowerCase(); render(); });
 $('#sort').addEventListener('change', e => { state.sort = e.target.value; render(); });
+if ($('#theme')) $('#theme').addEventListener('change', e => { state.theme = e.target.value; render(); });
 document.querySelectorAll('.f').forEach(b => b.addEventListener('click', () => {
   const k = b.dataset.f;
   if (state.filters.has(k)) { state.filters.delete(k); b.setAttribute('aria-pressed','false'); }
   else { state.filters.add(k); b.setAttribute('aria-pressed','true'); }
   render();
 }));
+populateThemes();
 render();
 """
 
@@ -240,7 +268,7 @@ def render_html(rows, span, n_papers, n_enriched, cfg, words=None):
     esc = html.escape
     keep = ("arxiv_id", "title", "abstract", "blurb", "thumb", "has_video",
             "age_days", "submitted_at", "venue", "venue_tier", "score", "parts",
-            "project_url", "code_url", "upvotes", "stars")
+            "project_url", "code_url", "upvotes", "stars", "theme")
     data = [{k: r.get(k) for k in keep} for r in rows]
     # </script> inside JSON would close the tag early.
     payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
@@ -274,6 +302,7 @@ def render_html(rows, span, n_papers, n_enriched, cfg, words=None):
         '      <option value="date">Sort: newest</option>\n'
         '      <option value="upvotes">Sort: upvotes</option>\n'
         '    </select>\n'
+        '    <select id="theme" aria-label="Theme"><option value="">All themes</option></select>\n'
         '  </div>\n'
         '  %s\n'
         '  <div class="filters">%s</div>\n'
