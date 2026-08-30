@@ -230,5 +230,10 @@ def set_github_stars(conn, arxiv_id, stars):
         )
 
 
+TABLES = ("papers", "hf_meta", "page_meta", "feedback", "signals")
+
+
 def count(conn, table="papers"):
+    if table not in TABLES:  # table names can't be bound parameters
+        raise ValueError("unknown table: %r" % table)
     return conn.execute("SELECT COUNT(*) FROM %s" % table).fetchone()[0]

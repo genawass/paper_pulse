@@ -11,6 +11,7 @@ catch a signal that is silently absent for 95% of the corpus.
 import json
 import math
 import os
+import re
 from datetime import datetime, timezone
 
 import yaml
@@ -86,15 +87,25 @@ def score_row(row, cfg):
     return total, parts
 
 
+def _http(url):
+    """Only http(s) URLs may reach the report. HF projectPage/githubRepo and
+    og:image are free text set by whoever submitted the paper — a javascript:
+    value here would become a live link in the rendered HTML."""
+    if url and re.match(r"https?://", url, re.I):
+        return url
+    return None
+
+
 def _thumb(row):
     """Card image: the authors' own teaser first, HF's upload as fallback."""
-    if row["og_image"]:
-        return row["og_image"]
+    og = _http(row["og_image"])
+    if og:
+        return og
     try:
         media = json.loads(row["raw_json"] or "{}").get("mediaUrls") or []
     except ValueError:
         media = []
-    return media[0] if media else None
+    return _http(media[0]) if media else None
 
 
 SELECT = """
@@ -141,8 +152,10 @@ def rank(conn, cfg, limit=None, require_category=None, taste_scores=None):
             "venue_tier": row["venue_tier"],
             "score": round(total, 3),
             "parts": parts,
-            "project_url": row["project_url"] or row["hf_project_page"],
-            "code_url": row["code_url"] or row["hf_github_repo"],
+            # links.py URLs are regex-validated https?://; the HF fallbacks
+            # are not, so they pass through the scheme allowlist.
+            "project_url": row["project_url"] or _http(row["hf_project_page"]),
+            "code_url": row["code_url"] or _http(row["hf_github_repo"]),
             "upvotes": row["upvotes"] or 0,
             "stars": row["hf_github_stars"] or 0,
             # 0 stars and "never looked" both display as 0; the stars stage

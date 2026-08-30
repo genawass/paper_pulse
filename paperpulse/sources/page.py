@@ -12,11 +12,13 @@ Regex over the head, not a parser: these are meta tags, and pulling in a
 dependency to read five of them is not worth it.
 """
 
+import ipaddress
 import re
+import socket
 import time
 
 import requests
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 DELAY = 0.3
 MAX_BYTES = 400_000  # heads are small; do not download a 50 MB demo page
@@ -39,6 +41,31 @@ VIDEO_RE = re.compile(
     r"<video[\s>]|\.mp4[\"'?]|youtube\.com/embed|player\.vimeo\.com", re.I)
 
 
+MAX_REDIRECTS = 5
+
+
+def _public_http_url(url):
+    """True only for http(s) URLs whose host resolves to public addresses.
+
+    These URLs come from paper comments — untrusted text. Without this check a
+    crafted comment could point the scraper at 169.254.169.254 or a service on
+    localhost and leak whatever it answers into og_description/page_title.
+    Checked per redirect hop, since a public host can redirect inward.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global:
+            return False
+    return True
+
+
 def _metas(html):
     out = {}
     for key, val in META_RE.findall(html):
@@ -58,8 +85,23 @@ def fetch(url, session=None):
               "has_video": False, "final_url": None, "page_title": None}
     session = session or requests.Session()
     try:
-        r = session.get(url, headers=UA, timeout=20, stream=True,
-                        allow_redirects=True)
+        # Redirects followed by hand so every hop passes the SSRF check.
+        target = url
+        for _ in range(MAX_REDIRECTS + 1):
+            if not _public_http_url(target):
+                return result
+            r = session.get(target, headers=UA, timeout=20, stream=True,
+                            allow_redirects=False)
+            if r.is_redirect or r.is_permanent_redirect:
+                loc = r.headers.get("location")
+                r.close()
+                if not loc:
+                    return result
+                target = urljoin(target, loc)
+                continue
+            break
+        else:
+            return result  # redirect loop
         if not r.ok:
             return result
         chunks, size = [], 0

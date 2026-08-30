@@ -270,8 +270,11 @@ def render_html(rows, span, n_papers, n_enriched, cfg, words=None):
             "age_days", "submitted_at", "venue", "venue_tier", "score", "parts",
             "project_url", "code_url", "upvotes", "stars", "theme")
     data = [{k: r.get(k) for k in keep} for r in rows]
-    # </script> inside JSON would close the tag early.
-    payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    # A literal "<" inside inline script data is dangerous: "</script>" closes
+    # the tag early, and "<!--<script" flips the parser into the double-escaped
+    # state and moves where the block ends. \\u003c is the same character to
+    # the JS engine but invisible to the HTML parser.
+    payload = json.dumps(data, ensure_ascii=False).replace("<", "\\u003c")
 
     panel = ""
     if words:
